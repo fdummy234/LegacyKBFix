@@ -1,0 +1,9 @@
+Package: com.fd.legacykbfix
+Name: LegacyKBFix
+Version: 0.2.0
+Architecture: iphoneos-arm
+Description: Corrige la geometrie du clavier signalee a l'app (iOS 26/27)
+Maintainer: fd
+Author: fd
+Section: Tweaks
+Depends: firmware (>= 14.0)
