@@ -1,5 +1,5 @@
 //
-//  LegacyKBFix — Tweak.m  (v1.3 — build final)
+//  LegacyKBFix — Tweak.m  (v1.0 — première release)
 //
 //  ── PROBLÈME ────────────────────────────────────────────────────────────────
 //  iOS 27, app de chat bâtie sur Chatto (Badoo).
