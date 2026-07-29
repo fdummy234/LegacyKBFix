@@ -1,5 +1,5 @@
 //
-//  LegacyKBFix — Tweak.m  (v0.4)
+//  LegacyKBFix — Tweak.m  (v1.0)
 //
 //  DIAGNOSTIC ÉTABLI (dump v0.3, iOS 27, app Chatto/Badoo) :
 //
@@ -30,7 +30,7 @@
 static BOOL    kRepairDefault    = YES;
 static BOOL    kAccessoryDefault = NO;    // pas le bon levier : ne pas toucher au
                                           // KeyboardTrackingView de Chatto
-static BOOL    kHUDDefault       = YES;   // mets NO pour le build final
+static BOOL    kHUDDefault       = NO;    // passe à YES pour rallumer le microscope
 static CGFloat kLiftDefault      = 0.0;   // ajustement fin si la barre rate encore
                                           // de quelques points (+ = remonte)
 
@@ -292,6 +292,6 @@ static void LKBFInit(void) {
                     (IMP)my_postName, &orig_postName);
         LKBFSwizzle(nc, @selector(postNotification:),
                     (IMP)my_postNote,  &orig_postNote);
-        NSLog(@"[LegacyKBFix] v0.4 chargé");
+        NSLog(@"[LegacyKBFix] v1.0 chargé");
     }
 }
