@@ -1,23 +1,22 @@
 //
-//  LegacyKBFix — Tweak.m  (v1.0)
+//  LegacyKBFix — Tweak.m  (v1.1)
 //
-//  DIAGNOSTIC ÉTABLI (dump v0.3, iOS 27, app Chatto/Badoo) :
+//  DIAGNOSTIC ÉTABLI (iOS 27, app Chatto/Badoo) :
 //
 //    vrai clavier    UIKeyboardItemContainerView   y=598  h=298   (bas = 896)
 //    frame annoncée  notification UIKeyboard*      y=636  h=320   (bas = 956)
 //
 //    Les vues de l'app vivent dans un espace de 896 de haut ; la notification est
-//    exprimée dans un espace de 956. Chatto place donc sa ChatInputBar par rapport
-//    à 636 au lieu de 598 → 38 pt trop bas → la rangée Aa/Send passe sous le clavier.
-//    (Barre de 85 pt occupant 551→636, recouverte à partir de 598 : 47 pt visibles
-//     en haut, 38 pt cachés en bas. Conforme aux captures.)
+//    exprimée dans un espace de 956. Chatto plaçait donc sa ChatInputBar par rapport
+//    à 636 au lieu de 598 → 38 pt trop bas → rangée Aa/Send sous le clavier.
 //
 //  CORRECTIF : remplacer la frame de la notification par la vraie mesure, prise
-//  dans l'espace de coordonnées de la scène — donc cohérente par construction.
+//  dans l'espace de coordonnées de la scène.
 //
-//  v0.3 cassait l'écran : le scan retenait UITrackingWindowView (y=0 h=896), soit
-//  l'écran entier. D'où les garde-fous ci-dessous — une mesure aberrante est
-//  désormais jetée, jamais injectée.
+//  v1.1 : le clavier iOS 27 est flottant — son fond gris commence quelques points
+//  sous son conteneur, d'où un vide résiduel entre la barre et le clavier. kLift
+//  compense. RÉGLEUR LIVE : glisser à DEUX DOIGTS ajuste kLift en direct et le
+//  sauvegarde, sans rebuild.
 //
 //  Aucune dépendance à Substrate / ellekit : swizzling ObjC pur.
 //
@@ -28,16 +27,16 @@
 #pragma mark - ==== RÉGLAGES ====
 
 static BOOL    kRepairDefault    = YES;
-static BOOL    kAccessoryDefault = NO;    // pas le bon levier : ne pas toucher au
-                                          // KeyboardTrackingView de Chatto
-static BOOL    kHUDDefault       = NO;    // passe à YES pour rallumer le microscope
-static CGFloat kLiftDefault      = 0.0;   // ajustement fin si la barre rate encore
-                                          // de quelques points (+ = remonte)
+static BOOL    kAccessoryDefault = NO;    // ne pas toucher au KeyboardTrackingView
+static BOOL    kHUDDefault       = NO;    // microscope
+static BOOL    kTunerDefault     = YES;   // régleur 2 doigts — NO pour le build final
+static CGFloat kLiftDefault      = -10.0; // point de départ ; + remonte, − redescend
 
-// Garde-fous : une frame clavier plausible est ancrée en bas et ne dépasse pas
-// cette fraction de la hauteur d'écran. Au-delà, on jette la mesure.
+// Garde-fous
 static const CGFloat kMaxKeyboardFraction = 0.70;
 static const CGFloat kBottomTolerance     = 6.0;
+static const CGFloat kLiftMin             = -80.0;
+static const CGFloat kLiftMax             = 120.0;
 
 static BOOL LKBFFlag(NSString *key, BOOL fallback) {
     id v = [NSUserDefaults.standardUserDefaults objectForKey:key];
@@ -47,6 +46,14 @@ static CGFloat LKBFNumber(NSString *key, CGFloat fallback) {
     id v = [NSUserDefaults.standardUserDefaults objectForKey:key];
     return v ? (CGFloat)[v doubleValue] : fallback;
 }
+static CGFloat LKBFLift(void) {
+    CGFloat l = LKBFNumber(@"LKBF_Lift", kLiftDefault);
+    return MAX(kLiftMin, MIN(kLiftMax, l));
+}
+
+// Implémentations originales — déclarées ici, le régleur en a besoin.
+static void (*orig_postName)(id, SEL, NSString *, id, NSDictionary *);
+static void (*orig_postNote)(id, SEL, NSNotification *);
 
 #pragma mark - Helpers
 
@@ -77,12 +84,8 @@ static UIView *LKBFFirstResponder(UIView *root) {
 
 #pragma mark - Mesure du clavier
 
-// Un candidat clavier doit être :
-//   - pleine largeur (≥ 80 % de la scène)
-//   - ancré au BAS de la scène (maxY ≈ bas, à kBottomTolerance près)
-//   - d'une hauteur crédible : ≥ 100 pt et ≤ kMaxKeyboardFraction de l'écran
-// Ça élimine UITrackingWindowView et UIEditingOverlayGestureView (plein écran),
-// qui avaient piégé la v0.3.
+// Un candidat doit être pleine largeur, ancré au BAS de la scène, et d'une hauteur
+// crédible. Ça élimine UITrackingWindowView et UIEditingOverlayGestureView.
 static void LKBFScan(UIView *v, int depth, CGRect ref,
                      id<UICoordinateSpace> cs, CGRect *best) {
     if (depth > 6) return;
@@ -90,13 +93,12 @@ static void LKBFScan(UIView *v, int depth, CGRect ref,
         if (sub.hidden || sub.alpha < 0.01) continue;
         CGRect f = [sub convertRect:sub.bounds toCoordinateSpace:cs];
 
-        BOOL wide      = f.size.width  >= ref.size.width * 0.80;
+        BOOL wide       = f.size.width  >= ref.size.width * 0.80;
         BOOL tallEnough = f.size.height >= 100.0;
-        BOOL notHuge   = f.size.height <= ref.size.height * kMaxKeyboardFraction;
-        BOOL bottomed  = fabs(CGRectGetMaxY(f) - CGRectGetMaxY(ref)) <= kBottomTolerance;
+        BOOL notHuge    = f.size.height <= ref.size.height * kMaxKeyboardFraction;
+        BOOL bottomed   = fabs(CGRectGetMaxY(f) - CGRectGetMaxY(ref)) <= kBottomTolerance;
 
         if (wide && tallEnough && notHuge && bottomed) {
-            // le plus HAUT sommet gagne : englobe les barres d'accessoires
             if (CGRectIsNull(*best) || CGRectGetMinY(f) < CGRectGetMinY(*best)) *best = f;
         }
         LKBFScan(sub, depth + 1, ref, cs, best);
@@ -118,6 +120,25 @@ static CGRect LKBFRealKeyboardFrame(void) {
     return best;
 }
 
+// Frame corrigée prête à injecter, ou CGRectNull si rien de crédible.
+static CGRect LKBFComputeFixed(CGRect ref) {
+    CGRect real = LKBFRealKeyboardFrame();
+    if (CGRectIsNull(real) || real.size.height <= 0) return CGRectNull;
+
+    CGFloat lift = LKBFLift();
+    CGRect f = real;
+    f.origin.y    -= lift;
+    f.size.height += lift;
+    f.origin.x     = CGRectGetMinX(ref);
+    f.size.width   = ref.size.width;
+
+    BOOL sane = f.size.height >= 80.0
+             && f.size.height <= ref.size.height * kMaxKeyboardFraction
+             && f.origin.y    >= CGRectGetMinY(ref) + ref.size.height * 0.20
+             && f.origin.y    <= CGRectGetMaxY(ref);
+    return sane ? f : CGRectNull;
+}
+
 #pragma mark - HUD
 
 static UILabel *gHUD;
@@ -128,7 +149,6 @@ static void LKBFHUD(NSString *text) {
         UIWindowScene *ws = LKBFActiveScene();
         UIWindow *key = ws ? LKBFKeyWindow(ws) : nil;
         if (!key) return;
-
         if (!gHUD || gHUD.window != key) {
             gHUD = [UILabel new];
             gHUD.numberOfLines = 0;
@@ -144,6 +164,126 @@ static void LKBFHUD(NSString *text) {
                                 key.bounds.size.width - 4, 84);
         [key bringSubviewToFront:gHUD];
     });
+}
+
+#pragma mark - Relance du layout (utilisée par le régleur)
+
+// Repost d'une paire de notifications de changement de frame, en passant par
+// l'implémentation ORIGINALE : la valeur est déjà corrigée, pas de double passe.
+static void LKBFNudge(void) {
+    UIWindowScene *ws = LKBFActiveScene();
+    if (!ws) return;
+    CGRect ref = ws.coordinateSpace.bounds;
+    CGRect f = LKBFComputeFixed(ref);
+    if (CGRectIsNull(f)) return;
+
+    NSValue *val = [NSValue valueWithCGRect:f];
+    NSDictionary *ui = @{
+        UIKeyboardFrameBeginUserInfoKey        : val,
+        UIKeyboardFrameEndUserInfoKey          : val,
+        UIKeyboardAnimationDurationUserInfoKey : @(0.0),
+        UIKeyboardAnimationCurveUserInfoKey    : @(UIViewAnimationCurveLinear),
+        UIKeyboardIsLocalUserInfoKey           : @YES,
+    };
+    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
+    SEL sel = @selector(postNotificationName:object:userInfo:);
+    if (!orig_postName) return;
+    orig_postName(nc, sel, UIKeyboardWillChangeFrameNotification, nil, ui);
+    orig_postName(nc, sel, UIKeyboardDidChangeFrameNotification,  nil, ui);
+}
+
+#pragma mark - Régleur live (glisser à deux doigts)
+
+static UILabel *gTunerLabel;
+static CGFloat  gLiftBase = 0;
+static NSUInteger gTunerGen = 0;
+
+static void LKBFTunerLabel(NSString *text, BOOL autoHide) {
+    UIWindowScene *ws = LKBFActiveScene();
+    UIWindow *key = ws ? LKBFKeyWindow(ws) : nil;
+    if (!key) return;
+
+    if (!gTunerLabel || gTunerLabel.window != key) {
+        gTunerLabel = [UILabel new];
+        gTunerLabel.textAlignment = NSTextAlignmentCenter;
+        gTunerLabel.font = [UIFont monospacedDigitSystemFontOfSize:15
+                                                            weight:UIFontWeightSemibold];
+        gTunerLabel.textColor = UIColor.whiteColor;
+        gTunerLabel.backgroundColor = [UIColor.blackColor colorWithAlphaComponent:0.80];
+        gTunerLabel.layer.cornerRadius = 9;
+        gTunerLabel.clipsToBounds = YES;
+        gTunerLabel.userInteractionEnabled = NO;
+        gTunerLabel.layer.zPosition = 10000;
+        [key addSubview:gTunerLabel];
+    }
+    gTunerLabel.text = text;
+    gTunerLabel.alpha = 1;
+    gTunerLabel.hidden = NO;
+    gTunerLabel.frame = CGRectMake((key.bounds.size.width - 150) / 2,
+                                   key.safeAreaInsets.top + 8, 150, 32);
+    [key bringSubviewToFront:gTunerLabel];
+
+    if (autoHide) {
+        NSUInteger gen = ++gTunerGen;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.6 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            if (gen != gTunerGen) return;
+            [UIView animateWithDuration:0.3 animations:^{ gTunerLabel.alpha = 0; }];
+        });
+    }
+}
+
+@interface LKBFTuner : NSObject
++ (instancetype)shared;
+- (void)pan:(UIPanGestureRecognizer *)g;
+@end
+
+@implementation LKBFTuner
+
++ (instancetype)shared {
+    static LKBFTuner *s; static dispatch_once_t once;
+    dispatch_once(&once, ^{ s = [LKBFTuner new]; });
+    return s;
+}
+
+- (void)pan:(UIPanGestureRecognizer *)g {
+    if (g.state == UIGestureRecognizerStateBegan) gLiftBase = LKBFLift();
+
+    CGFloat dy = [g translationInView:g.view].y;
+    // vers le HAUT = remonter la barre
+    CGFloat lift = roundf(gLiftBase - dy / 2.0f);
+    lift = MAX(kLiftMin, MIN(kLiftMax, lift));
+
+    [NSUserDefaults.standardUserDefaults setDouble:lift forKey:@"LKBF_Lift"];
+
+    BOOL ended = (g.state == UIGestureRecognizerStateEnded ||
+                  g.state == UIGestureRecognizerStateCancelled);
+    LKBFTunerLabel([NSString stringWithFormat:@"lift  %+.0f", lift], ended);
+    LKBFNudge();
+}
+
+@end
+
+static void LKBFInstallTuner(void) {
+    if (!LKBFFlag(@"LKBF_Tuner", kTunerDefault)) return;
+    UIWindowScene *ws = LKBFActiveScene();
+    UIWindow *key = ws ? LKBFKeyWindow(ws) : nil;
+    if (!key) return;
+
+    for (UIGestureRecognizer *g in key.gestureRecognizers)
+        if ([g isKindOfClass:UIPanGestureRecognizer.class] &&
+            [g.name isEqualToString:@"LKBFTunerPan"]) return;   // déjà posé
+
+    UIPanGestureRecognizer *pan =
+        [[UIPanGestureRecognizer alloc] initWithTarget:[LKBFTuner shared]
+                                                action:@selector(pan:)];
+    pan.name = @"LKBFTunerPan";
+    pan.minimumNumberOfTouches = 2;
+    pan.maximumNumberOfTouches = 2;
+    pan.cancelsTouchesInView = NO;
+    pan.delaysTouchesBegan = NO;
+    pan.delaysTouchesEnded = NO;
+    [key addGestureRecognizer:pan];
 }
 
 #pragma mark - Sauvetage de l'accessoire (désactivé par défaut)
@@ -185,50 +325,34 @@ static NSDictionary *LKBFRepair(NSString *name, NSDictionary *info) {
 
     CGRect given = endValue.CGRectValue;
     CGRect fixed = given;
-    CGRect real  = LKBFRealKeyboardFrame();
     NSString *verdict = @"—";
 
     BOOL hiding = [name isEqualToString:UIKeyboardWillHideNotification] ||
                   [name isEqualToString:UIKeyboardDidHideNotification];
 
     if (hiding) {
-        fixed.size.width  = ref.size.width;
+        fixed.size.width = ref.size.width;
         if (fixed.size.height <= 0) fixed.size.height = 300;
         fixed.origin.x = CGRectGetMinX(ref);
         fixed.origin.y = CGRectGetMaxY(ref);
         gKeyboardTop = -1;
         verdict = @"hide";
-    } else if (CGRectIsNull(real) || real.size.height <= 0) {
-        verdict = @"pas de mesure";        // on ne touche à rien
     } else {
-        fixed = real;
-        CGFloat lift = LKBFNumber(@"LKBF_Lift", kLiftDefault);
-        fixed.origin.y    -= lift;
-        fixed.size.height += lift;
-        fixed.origin.x    = CGRectGetMinX(ref);
-        fixed.size.width  = ref.size.width;
-
-        // ---- GARDE-FOUS : une frame aberrante est jetée, pas injectée ----
-        BOOL sane = fixed.size.height >= 80.0
-                 && fixed.size.height <= ref.size.height * kMaxKeyboardFraction
-                 && fixed.origin.y    >= CGRectGetMinY(ref) + ref.size.height * 0.20
-                 && fixed.origin.y    <= CGRectGetMaxY(ref);
-        if (!sane) {
-            fixed = given;
-            verdict = @"REJETE";
+        CGRect computed = LKBFComputeFixed(ref);
+        if (CGRectIsNull(computed)) {
+            verdict = @"REJETE";           // on laisse passer celle du système
         } else {
+            fixed = computed;
             gKeyboardTop = fixed.origin.y;
             verdict = @"ok";
         }
     }
 
     LKBFHUD([NSString stringWithFormat:
-             @"%@ [%@]\nsys  h=%.0f y=%.0f\nreal h=%.0f y=%.0f\nfix  h=%.0f y=%.0f",
+             @"%@ [%@] lift=%+.0f\nsys h=%.0f y=%.0f\nfix h=%.0f y=%.0f",
              [name stringByReplacingOccurrencesOfString:@"Notification" withString:@""],
-             verdict,
+             verdict, LKBFLift(),
              given.size.height, given.origin.y,
-             CGRectIsNull(real) ? -1 : real.size.height,
-             CGRectIsNull(real) ? -1 : real.origin.y,
              fixed.size.height, fixed.origin.y]);
 
     if (!LKBFFlag(@"LKBF_Repair", kRepairDefault)) return info;
@@ -248,13 +372,14 @@ static NSDictionary *LKBFRepair(NSString *name, NSDictionary *info) {
 }
 
 static void LKBFAfterNote(NSString *name) {
-    if ([name containsString:@"DidShow"] || [name containsString:@"DidChangeFrame"])
+    if ([name containsString:@"DidShow"] || [name containsString:@"DidChangeFrame"]) {
         LKBFRescueAccessory();
+        dispatch_async(dispatch_get_main_queue(), ^{ LKBFInstallTuner(); });
+    }
 }
 
 #pragma mark - Swizzles
 
-static void (*orig_postName)(id, SEL, NSString *, id, NSDictionary *);
 static void my_postName(id self, SEL _cmd, NSString *name, id object, NSDictionary *info) {
     if (LKBFIsKeyboardNote(name)) {
         orig_postName(self, _cmd, name, object, LKBFRepair(name, info));
@@ -264,7 +389,6 @@ static void my_postName(id self, SEL _cmd, NSString *name, id object, NSDictiona
     orig_postName(self, _cmd, name, object, info);
 }
 
-static void (*orig_postNote)(id, SEL, NSNotification *);
 static void my_postNote(id self, SEL _cmd, NSNotification *n) {
     if (LKBFIsKeyboardNote(n.name)) {
         NSString *name = n.name;
@@ -292,6 +416,6 @@ static void LKBFInit(void) {
                     (IMP)my_postName, &orig_postName);
         LKBFSwizzle(nc, @selector(postNotification:),
                     (IMP)my_postNote,  &orig_postNote);
-        NSLog(@"[LegacyKBFix] v1.0 chargé");
+        NSLog(@"[LegacyKBFix] v1.1 chargé");
     }
 }
