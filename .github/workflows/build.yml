@@ -1,6 +1,6 @@
 name: Build
 
-# Déclenchement MANUEL uniquement : aucun commit ne lance de build.
+# Déclenchement manuel uniquement.
 on:
   workflow_dispatch:
     inputs:
@@ -10,7 +10,7 @@ on:
         default: ""
 
 permissions:
-  contents: write        # nécessaire pour créer la release
+  contents: write
 
 jobs:
   build:
@@ -26,22 +26,12 @@ jobs:
       - name: Build package
         run: make clean && make package FINALPACKAGE=1
 
-      - name: Inspect .deb
-        continue-on-error: true
-        run: |
-          DEB=$(ls packages/*.deb | head -n1)
-          echo "===== CONTENU ====="
-          dpkg-deb -c "$DEB"
-          echo "===== CONTROL ====="
-          dpkg-deb -I "$DEB"
-
       - name: Draft release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ inputs.tag }}"
           if [ -z "$TAG" ]; then TAG="build-${{ github.run_number }}"; fi
-          echo "Tag : $TAG"
           gh release create "$TAG" packages/*.deb \
             --draft \
             --title "LegacyKBFix $TAG" \
