@@ -1,9 +1,16 @@
 name: Build
 
+# Déclenchement MANUEL uniquement : aucun commit ne lance de build.
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
+    inputs:
+      tag:
+        description: "Tag de la release (vide = build-<numéro>)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write        # nécessaire pour créer la release
 
 jobs:
   build:
@@ -19,9 +26,23 @@ jobs:
       - name: Build package
         run: make clean && make package FINALPACKAGE=1
 
-      - name: Upload .deb
-        uses: actions/upload-artifact@v4
-        with:
-          name: LegacyKBFix-deb
-          path: packages/*.deb
-          if-no-files-found: error
+      - name: Inspect .deb
+        continue-on-error: true
+        run: |
+          DEB=$(ls packages/*.deb | head -n1)
+          echo "===== CONTENU ====="
+          dpkg-deb -c "$DEB"
+          echo "===== CONTROL ====="
+          dpkg-deb -I "$DEB"
+
+      - name: Draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="build-${{ github.run_number }}"; fi
+          echo "Tag : $TAG"
+          gh release create "$TAG" packages/*.deb \
+            --draft \
+            --title "LegacyKBFix $TAG" \
+            --notes "Build manuel — commit ${{ github.sha }}"
